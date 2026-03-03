@@ -1,0 +1,43 @@
+receivers:
+  hetzner:
+    # Hetzner Cloud API token (required)
+    api_token: "${env:HETZNER_API_TOKEN}"
+
+    # How often to collect metrics (default: 60s)
+    collection_interval: 60s
+
+    # Resource types to collect metrics for
+    servers: true        # Collect server metrics (default: true)
+    load_balancers: true # Collect load balancer metrics (default: true)
+
+    # Metrics resolution in seconds, 60-3600 (default: 60)
+    metrics_step: 60
+
+processors:
+  batch:
+    timeout: 10s
+
+exporters:
+  debug:
+    verbosity: detailed
+
+  # Example: Send to another OTLP endpoint
+  # otlp:
+  #   endpoint: localhost:4317
+  #   tls:
+  #     insecure: true
+
+extensions:
+  zpages:
+    endpoint: localhost:55679
+
+service:
+  telemetry:
+    metrics:
+      level: none
+  extensions: [zpages]
+  pipelines:
+    metrics:
+      receivers: [hetzner]
+      processors: [batch]
+      exporters: [debug]
