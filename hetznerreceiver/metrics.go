@@ -3,26 +3,37 @@ package hetznerreceiver
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 )
 
-// serverMetricMap maps Hetzner TimeSeries keys to OTel metric names and units.
-var serverMetricMap = map[string]struct {
+type metricDef struct {
 	Name string
 	Unit string
-}{
-	"cpu":                    {"hetzner.server.cpu", "percent"},
-	"disk.0.iops.read":      {"hetzner.server.disk.iops.read", "{operations}/s"},
-	"disk.0.iops.write":     {"hetzner.server.disk.iops.write", "{operations}/s"},
-	"disk.0.bandwidth.read":  {"hetzner.server.disk.bandwidth.read", "By/s"},
-	"disk.0.bandwidth.write": {"hetzner.server.disk.bandwidth.write", "By/s"},
-	"network.0.bandwidth.in":  {"hetzner.server.network.bandwidth.in", "By/s"},
-	"network.0.bandwidth.out": {"hetzner.server.network.bandwidth.out", "By/s"},
-	"network.0.pps.in":        {"hetzner.server.network.pps.in", "{packets}/s"},
-	"network.0.pps.out":       {"hetzner.server.network.pps.out", "{packets}/s"},
+}
+
+// serverMetricMap maps simple Hetzner TimeSeries keys to OTel metric names and units.
+var serverMetricMap = map[string]metricDef{
+	"cpu": {"hetzner.server.cpu", "percent"},
+}
+
+// serverDiskMetricMap maps disk metric suffixes (after "disk.N.") to OTel metric definitions.
+var serverDiskMetricMap = map[string]metricDef{
+	"iops.read":      {"hetzner.server.disk.iops.read", "{operations}/s"},
+	"iops.write":     {"hetzner.server.disk.iops.write", "{operations}/s"},
+	"bandwidth.read":  {"hetzner.server.disk.bandwidth.read", "By/s"},
+	"bandwidth.write": {"hetzner.server.disk.bandwidth.write", "By/s"},
+}
+
+// serverNetworkMetricMap maps network metric suffixes (after "network.N.") to OTel metric definitions.
+var serverNetworkMetricMap = map[string]metricDef{
+	"bandwidth.in":  {"hetzner.server.network.bandwidth.in", "By/s"},
+	"bandwidth.out": {"hetzner.server.network.bandwidth.out", "By/s"},
+	"pps.in":        {"hetzner.server.network.pps.in", "{packets}/s"},
+	"pps.out":       {"hetzner.server.network.pps.out", "{packets}/s"},
 }
 
 // lbMetricMap maps Hetzner TimeSeries keys to OTel metric names and units.
@@ -45,6 +56,37 @@ func addGauge(sm pmetric.ScopeMetrics, name, unit string, value float64, ts pcom
 	dp := m.SetEmptyGauge().DataPoints().AppendEmpty()
 	dp.SetDoubleValue(value)
 	dp.SetTimestamp(ts)
+}
+
+// addGaugeWithAttr adds a gauge metric with a single data point and one attribute.
+func addGaugeWithAttr(sm pmetric.ScopeMetrics, name, unit string, value float64, ts pcommon.Timestamp, attrKey, attrVal string) {
+	m := sm.Metrics().AppendEmpty()
+	m.SetName(name)
+	m.SetUnit(unit)
+	dp := m.SetEmptyGauge().DataPoints().AppendEmpty()
+	dp.SetDoubleValue(value)
+	dp.SetTimestamp(ts)
+	dp.Attributes().PutStr(attrKey, attrVal)
+}
+
+// parseIndexedMetricKey parses keys like "disk.0.iops.read" or "network.1.bandwidth.in"
+// into (resourceType, index, suffix) e.g. ("disk", "0", "iops.read").
+func parseIndexedMetricKey(key string) (resourceType, index, suffix string) {
+	first, rest, ok := strings.Cut(key, ".")
+	if !ok {
+		return "", "", ""
+	}
+	if first != "disk" && first != "network" {
+		return "", "", ""
+	}
+	idx, sfx, ok := strings.Cut(rest, ".")
+	if !ok {
+		return "", "", ""
+	}
+	if _, err := strconv.Atoi(idx); err != nil {
+		return "", "", ""
+	}
+	return first, idx, sfx
 }
 
 // setServerResourceAttributes sets OTel resource attributes for a Hetzner server.

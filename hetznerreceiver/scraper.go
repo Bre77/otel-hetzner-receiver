@@ -97,6 +97,28 @@ func (s *hetznerScraper) scrapeServers(ctx context.Context, md pmetric.Metrics, 
 	}
 
 	for _, server := range servers {
+		rm := md.ResourceMetrics().AppendEmpty()
+		setServerResourceAttributes(rm.Resource(), server)
+
+		sm := rm.ScopeMetrics().AppendEmpty()
+		sm.Scope().SetName(scopeName)
+		sm.Scope().SetVersion(scopeVersion)
+
+		ts := pcommon.NewTimestampFromTime(end)
+
+		// Always emit running gauge
+		running := 0.0
+		if server.Status == hcloud.ServerStatusRunning {
+			running = 1.0
+		}
+		addGauge(sm, "hetzner.server.running", "1", running, ts)
+
+		// Always emit traffic counters
+		addGauge(sm, "hetzner.server.traffic.included", "By", float64(server.IncludedTraffic), ts)
+		addGauge(sm, "hetzner.server.traffic.outgoing", "By", float64(server.OutgoingTraffic), ts)
+		addGauge(sm, "hetzner.server.traffic.ingoing", "By", float64(server.IngoingTraffic), ts)
+
+		// Only fetch API metrics for running servers
 		if server.Status != hcloud.ServerStatusRunning {
 			continue
 		}
@@ -119,25 +141,49 @@ func (s *hetznerScraper) scrapeServers(ctx context.Context, md pmetric.Metrics, 
 			continue
 		}
 
-		rm := md.ResourceMetrics().AppendEmpty()
-		setServerResourceAttributes(rm.Resource(), server)
-
-		sm := rm.ScopeMetrics().AppendEmpty()
-		sm.Scope().SetName(scopeName)
-		sm.Scope().SetVersion(scopeVersion)
-
-		ts := pcommon.NewTimestampFromTime(end)
-
 		for key, values := range metrics.TimeSeries {
-			def, ok := serverMetricMap[key]
-			if !ok {
+			// Try simple metric map first (e.g. "cpu")
+			if def, ok := serverMetricMap[key]; ok {
+				v, ok := lastTimeSeriesValue(values)
+				if !ok {
+					continue
+				}
+				addGauge(sm, def.Name, def.Unit, v, ts)
 				continue
 			}
+
+			// Try dynamic disk/network parsing (e.g. "disk.0.iops.read", "network.1.bandwidth.in")
+			resourceType, index, suffix := parseIndexedMetricKey(key)
+			if resourceType == "" {
+				continue
+			}
+
+			var def metricDef
+			var attrKey string
+			switch resourceType {
+			case "disk":
+				d, ok := serverDiskMetricMap[suffix]
+				if !ok {
+					continue
+				}
+				def = d
+				attrKey = "disk_index"
+			case "network":
+				d, ok := serverNetworkMetricMap[suffix]
+				if !ok {
+					continue
+				}
+				def = d
+				attrKey = "network_index"
+			default:
+				continue
+			}
+
 			v, ok := lastTimeSeriesValue(values)
 			if !ok {
 				continue
 			}
-			addGauge(sm, def.Name, def.Unit, v, ts)
+			addGaugeWithAttr(sm, def.Name, def.Unit, v, ts, attrKey, index)
 		}
 	}
 
@@ -151,6 +197,40 @@ func (s *hetznerScraper) scrapeLoadBalancers(ctx context.Context, md pmetric.Met
 	}
 
 	for _, lb := range lbs {
+		rm := md.ResourceMetrics().AppendEmpty()
+		setLBResourceAttributes(rm.Resource(), lb)
+
+		sm := rm.ScopeMetrics().AppendEmpty()
+		sm.Scope().SetName(scopeName)
+		sm.Scope().SetVersion(scopeVersion)
+
+		ts := pcommon.NewTimestampFromTime(end)
+
+		// Traffic counters
+		addGauge(sm, "hetzner.load_balancer.traffic.included", "By", float64(lb.IncludedTraffic), ts)
+		addGauge(sm, "hetzner.load_balancer.traffic.outgoing", "By", float64(lb.OutgoingTraffic), ts)
+		addGauge(sm, "hetzner.load_balancer.traffic.ingoing", "By", float64(lb.IngoingTraffic), ts)
+
+		// Target health
+		var healthy, unhealthy int64
+		for _, target := range lb.Targets {
+			targetHealthy := len(target.HealthStatus) > 0
+			for _, hs := range target.HealthStatus {
+				if hs.Status != hcloud.LoadBalancerTargetHealthStatusStatusHealthy {
+					targetHealthy = false
+					break
+				}
+			}
+			if targetHealthy {
+				healthy++
+			} else {
+				unhealthy++
+			}
+		}
+		addGauge(sm, "hetzner.load_balancer.targets.healthy", "{targets}", float64(healthy), ts)
+		addGauge(sm, "hetzner.load_balancer.targets.unhealthy", "{targets}", float64(unhealthy), ts)
+
+		// API metrics
 		metrics, _, err := s.api.GetLBMetrics(ctx, lb, hcloud.LoadBalancerGetMetricsOpts{
 			Types: []hcloud.LoadBalancerMetricType{
 				hcloud.LoadBalancerMetricOpenConnections,
@@ -169,15 +249,6 @@ func (s *hetznerScraper) scrapeLoadBalancers(ctx context.Context, md pmetric.Met
 				zap.Error(err))
 			continue
 		}
-
-		rm := md.ResourceMetrics().AppendEmpty()
-		setLBResourceAttributes(rm.Resource(), lb)
-
-		sm := rm.ScopeMetrics().AppendEmpty()
-		sm.Scope().SetName(scopeName)
-		sm.Scope().SetVersion(scopeVersion)
-
-		ts := pcommon.NewTimestampFromTime(end)
 
 		for key, values := range metrics.TimeSeries {
 			def, ok := lbMetricMap[key]
