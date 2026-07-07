@@ -98,7 +98,7 @@ func (s *hetznerScraper) scrapeServers(ctx context.Context, md pmetric.Metrics, 
 
 	for _, server := range servers {
 		rm := md.ResourceMetrics().AppendEmpty()
-		setServerResourceAttributes(rm.Resource(), server)
+		setServerResourceAttributes(rm.Resource(), server, s.cfg.Environment)
 
 		sm := rm.ScopeMetrics().AppendEmpty()
 		sm.Scope().SetName(scopeName)
@@ -198,7 +198,7 @@ func (s *hetznerScraper) scrapeLoadBalancers(ctx context.Context, md pmetric.Met
 
 	for _, lb := range lbs {
 		rm := md.ResourceMetrics().AppendEmpty()
-		setLBResourceAttributes(rm.Resource(), lb)
+		setLBResourceAttributes(rm.Resource(), lb, s.cfg.Environment)
 
 		sm := rm.ScopeMetrics().AppendEmpty()
 		sm.Scope().SetName(scopeName)

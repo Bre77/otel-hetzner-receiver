@@ -17,9 +17,9 @@ import (
 
 // mockAPI implements hcloudAPI for testing.
 type mockAPI struct {
-	servers     []*hcloud.Server
-	serverErr   error
-	serverMetrics map[int64]*hcloud.ServerMetrics
+	servers         []*hcloud.Server
+	serverErr       error
+	serverMetrics   map[int64]*hcloud.ServerMetrics
 	serverMetricErr error
 
 	loadBalancers []*hcloud.LoadBalancer
@@ -567,17 +567,17 @@ func TestServerResourceAttributes(t *testing.T) {
 	attrs := md.ResourceMetrics().At(0).Resource().Attributes()
 
 	expected := map[string]string{
-		"cloud.provider":          "hetzner",
-		"cloud.platform":          "hetzner_cloud",
-		"host.id":                 "1",
-		"host.name":               "web-1",
-		"host.type":               "cx22",
-		"host.ip":                 "1.2.3.4",
-		"cloud.availability_zone": "fsn1-dc14",
-		"cloud.region":            "fsn1",
-		"hetzner.server.status":   "running",
+		"cloud.provider":               "hetzner",
+		"cloud.platform":               "hetzner_cloud",
+		"host.id":                      "1",
+		"host.name":                    "web-1",
+		"host.type":                    "cx22",
+		"host.ip":                      "1.2.3.4",
+		"cloud.availability_zone":      "fsn1-dc14",
+		"cloud.region":                 "fsn1",
+		"hetzner.server.status":        "running",
 		"hetzner.server.type.cpu_type": "shared",
-		"hetzner.label.env":       "test",
+		"hetzner.label.env":            "test",
 	}
 
 	for key, want := range expected {
@@ -598,6 +598,105 @@ func TestServerResourceAttributes(t *testing.T) {
 	v, ok = attrs.Get("hetzner.server.type.disk")
 	require.True(t, ok)
 	assert.Equal(t, int64(40), v.Int())
+}
+
+func TestServerResourceAttributesNoHostByDefault(t *testing.T) {
+	mock := &mockAPI{
+		servers: []*hcloud.Server{
+			testServer(1, "web-1", hcloud.ServerStatusRunning),
+		},
+		serverMetrics: map[int64]*hcloud.ServerMetrics{
+			1: {TimeSeries: map[string][]hcloud.ServerMetricsValue{"cpu": {{Timestamp: 1060, Value: "10"}}}},
+		},
+	}
+
+	s := &hetznerScraper{
+		cfg: &Config{
+			Servers:       true,
+			LoadBalancers: false,
+			MetricsStep:   60,
+		},
+		logger: zap.NewNop(),
+		api:    mock,
+	}
+
+	md, err := s.Scrape(context.Background())
+	require.NoError(t, err)
+
+	attrs := md.ResourceMetrics().At(0).Resource().Attributes()
+	_, ok := attrs.Get("deployment.environment.name")
+	assert.False(t, ok, "deployment.environment.name must not be set when Environment is empty")
+}
+
+func TestServerResourceAttributesEnvironment(t *testing.T) {
+	mock := &mockAPI{
+		servers: []*hcloud.Server{
+			testServer(1, "web-1", hcloud.ServerStatusRunning),
+		},
+		serverMetrics: map[int64]*hcloud.ServerMetrics{
+			1: {TimeSeries: map[string][]hcloud.ServerMetricsValue{"cpu": {{Timestamp: 1060, Value: "10"}}}},
+		},
+	}
+
+	s := &hetznerScraper{
+		cfg: &Config{
+			Servers:       true,
+			LoadBalancers: false,
+			MetricsStep:   60,
+			Environment:   "prod",
+		},
+		logger: zap.NewNop(),
+		api:    mock,
+	}
+
+	md, err := s.Scrape(context.Background())
+	require.NoError(t, err)
+
+	attrs := md.ResourceMetrics().At(0).Resource().Attributes()
+	v, ok := attrs.Get("deployment.environment.name")
+	require.True(t, ok)
+	assert.Equal(t, "prod", v.Str())
+}
+
+func TestLBResourceAttributesNoHostAttribute(t *testing.T) {
+	mock := &mockAPI{
+		loadBalancers: []*hcloud.LoadBalancer{
+			testLoadBalancer(10, "lb-1"),
+		},
+		lbMetrics: map[int64]*hcloud.LoadBalancerMetrics{
+			10: {TimeSeries: map[string][]hcloud.LoadBalancerMetricsValue{}},
+		},
+	}
+
+	s := &hetznerScraper{
+		cfg: &Config{
+			Servers:       false,
+			LoadBalancers: true,
+			MetricsStep:   60,
+			Environment:   "prod",
+		},
+		logger: zap.NewNop(),
+		api:    mock,
+	}
+
+	md, err := s.Scrape(context.Background())
+	require.NoError(t, err)
+
+	attrs := md.ResourceMetrics().At(0).Resource().Attributes()
+
+	// Load balancers are PaaS, not hosts - must never carry a host.* identity.
+	for _, key := range []string{"host.id", "host.name", "host.type", "host.ip"} {
+		_, ok := attrs.Get(key)
+		assert.False(t, ok, "load balancer resource must not carry %s", key)
+	}
+
+	v, ok := attrs.Get("hetzner.load_balancer.id")
+	require.True(t, ok)
+	assert.Equal(t, "10", v.Str())
+
+	v, ok = attrs.Get("deployment.environment.name")
+	require.True(t, ok)
+	assert.Equal(t, "prod", v.Str())
 }
 
 func TestScrapeMultiDiskNetwork(t *testing.T) {
@@ -723,9 +822,9 @@ func TestParseIndexedMetricKey(t *testing.T) {
 func TestScrapeDisabledServers(t *testing.T) {
 	s := &hetznerScraper{
 		cfg: &Config{
-			Servers:       false,
-			LoadBalancers: false,
-			MetricsStep:   60,
+			Servers:            false,
+			LoadBalancers:      false,
+			MetricsStep:        60,
 			CollectionInterval: time.Minute,
 		},
 		logger: zap.NewNop(),
