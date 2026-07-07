@@ -21,6 +21,12 @@ type Config struct {
 
 	// MetricsStep is the metrics resolution in seconds (60-3600).
 	MetricsStep int `mapstructure:"metrics_step"`
+
+	// Environment, when set, is attached to every emitted resource as the
+	// deployment.environment.name attribute. It is optional: this receiver
+	// has no way to infer an environment from the Hetzner API, so the
+	// deployment must supply it explicitly if it wants the attribute.
+	Environment string `mapstructure:"environment"`
 }
 
 // Validate checks if the configuration is valid.

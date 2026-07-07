@@ -13,6 +13,12 @@ receivers:
     # Metrics resolution in seconds, 60-3600 (default: 60)
     metrics_step: 60
 
+    # Optional deployment environment name, attached to every emitted
+    # resource as deployment.environment.name. Unset by default - the
+    # Hetzner API has no notion of environment, so set this per-deployment
+    # if you need the attribute.
+    # environment: "prod"
+
 processors:
   batch:
     timeout: 10s

@@ -22,8 +22,8 @@ var serverMetricMap = map[string]metricDef{
 
 // serverDiskMetricMap maps disk metric suffixes (after "disk.N.") to OTel metric definitions.
 var serverDiskMetricMap = map[string]metricDef{
-	"iops.read":      {"hetzner.server.disk.iops.read", "{operations}/s"},
-	"iops.write":     {"hetzner.server.disk.iops.write", "{operations}/s"},
+	"iops.read":       {"hetzner.server.disk.iops.read", "{operations}/s"},
+	"iops.write":      {"hetzner.server.disk.iops.write", "{operations}/s"},
 	"bandwidth.read":  {"hetzner.server.disk.bandwidth.read", "By/s"},
 	"bandwidth.write": {"hetzner.server.disk.bandwidth.write", "By/s"},
 }
@@ -90,12 +90,16 @@ func parseIndexedMetricKey(key string) (resourceType, index, suffix string) {
 }
 
 // setServerResourceAttributes sets OTel resource attributes for a Hetzner server.
-func setServerResourceAttributes(res pcommon.Resource, server *hcloud.Server) {
+// environment, if non-empty, is attached as deployment.environment.name.
+func setServerResourceAttributes(res pcommon.Resource, server *hcloud.Server, environment string) {
 	attrs := res.Attributes()
 
 	// OTel semantic conventions
 	attrs.PutStr("cloud.provider", "hetzner")
 	attrs.PutStr("cloud.platform", "hetzner_cloud")
+	if environment != "" {
+		attrs.PutStr("deployment.environment.name", environment)
+	}
 	attrs.PutStr("host.id", fmt.Sprintf("%d", server.ID))
 	attrs.PutStr("host.name", server.Name)
 	attrs.PutStr("host.type", server.ServerType.Name)
@@ -125,12 +129,21 @@ func setServerResourceAttributes(res pcommon.Resource, server *hcloud.Server) {
 }
 
 // setLBResourceAttributes sets OTel resource attributes for a Hetzner load balancer.
-func setLBResourceAttributes(res pcommon.Resource, lb *hcloud.LoadBalancer) {
+// environment, if non-empty, is attached as deployment.environment.name.
+//
+// Load balancers are a managed PaaS offering, not a host, so no host.*
+// attribute is set here - hetzner.load_balancer.id/.name are the per-resource
+// identity instead (mirroring how other OTel receivers identify non-host
+// cloud resources, e.g. cloud.resource_id / db.* named-resource conventions).
+func setLBResourceAttributes(res pcommon.Resource, lb *hcloud.LoadBalancer, environment string) {
 	attrs := res.Attributes()
 
 	// OTel semantic conventions
 	attrs.PutStr("cloud.provider", "hetzner")
 	attrs.PutStr("cloud.platform", "hetzner_cloud")
+	if environment != "" {
+		attrs.PutStr("deployment.environment.name", environment)
+	}
 
 	if lb.Location != nil {
 		attrs.PutStr("cloud.region", lb.Location.Name)
