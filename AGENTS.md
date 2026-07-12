@@ -65,6 +65,13 @@ Hetzner Cloud API → hcloud-go SDK → Scrape() → OTel metrics → Exporter p
 - `mockAPI` in tests provides deterministic responses
 - No HTTP mocking needed - tests operate at the SDK interface level
 
+## CI
+
+`.github/workflows/ci.yml` runs `go vet` and `go test -v ./...` in `hetznerreceiver/`
+on push/PR to `main`. `.github/workflows/release.yml` runs the same tests then
+cuts a GitHub Release (via `softprops/action-gh-release`) on `v*.*.*` tags. Both
+pin the Go toolchain to `hetznerreceiver/go.mod`.
+
 ## Key Dependencies
 
 - OpenTelemetry Collector SDK v0.143.0
@@ -94,3 +101,10 @@ collector-config level (inserting the collector host's own `host.name` via a
 processor) was rejected - it mislabeled every series with one machine's
 identity. Any resource-identity fix belongs here, at the receiver, where
 per-resource data from the API is still available.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.
