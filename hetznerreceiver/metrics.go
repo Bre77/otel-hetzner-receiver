@@ -165,6 +165,67 @@ func setLBResourceAttributes(res pcommon.Resource, lb *hcloud.LoadBalancer, envi
 	}
 }
 
+// addLBTargetHealthGauges emits hetzner.load_balancer.target.healthy for every
+// (target, listen port) pair reported by the API, recursing into label_selector
+// targets' expanded member servers. A target with no HealthStatus entries
+// (e.g. a label_selector matching zero servers) is skipped entirely rather
+// than reported as unknown, so "no target present" stays distinguishable from
+// "target present, health unknown" (LoadBalancerTargetHealthStatusStatusUnknown,
+// captured in the status attribute).
+func addLBTargetHealthGauges(sm pmetric.ScopeMetrics, targets []hcloud.LoadBalancerTarget, ts pcommon.Timestamp) {
+	for _, target := range targets {
+		addTargetHealth(sm, target, "", ts)
+	}
+}
+
+func addTargetHealth(sm pmetric.ScopeMetrics, target hcloud.LoadBalancerTarget, labelSelector string, ts pcommon.Timestamp) {
+	selector := labelSelector
+	if target.Type == hcloud.LoadBalancerTargetTypeLabelSelector && target.LabelSelector != nil {
+		selector = target.LabelSelector.Selector
+	}
+
+	for _, hs := range target.HealthStatus {
+		m := sm.Metrics().AppendEmpty()
+		m.SetName("hetzner.load_balancer.target.healthy")
+		m.SetUnit("1")
+		dp := m.SetEmptyGauge().DataPoints().AppendEmpty()
+		value := 0.0
+		if hs.Status == hcloud.LoadBalancerTargetHealthStatusStatusHealthy {
+			value = 1.0
+		}
+		dp.SetDoubleValue(value)
+		dp.SetTimestamp(ts)
+
+		attrs := dp.Attributes()
+		attrs.PutStr("hetzner.load_balancer.target.type", string(target.Type))
+		attrs.PutInt("hetzner.load_balancer.target.listen_port", int64(hs.ListenPort))
+		attrs.PutStr("hetzner.load_balancer.target.status", string(hs.Status))
+		if selector != "" {
+			attrs.PutStr("hetzner.load_balancer.target.label_selector", selector)
+		}
+
+		switch target.Type {
+		case hcloud.LoadBalancerTargetTypeServer:
+			if target.Server != nil && target.Server.Server != nil {
+				attrs.PutStr("host.id", fmt.Sprintf("%d", target.Server.Server.ID))
+				if target.Server.Server.Name != "" {
+					attrs.PutStr("host.name", target.Server.Server.Name)
+				}
+			}
+		case hcloud.LoadBalancerTargetTypeIP:
+			if target.IP != nil {
+				attrs.PutStr("hetzner.load_balancer.target.ip", target.IP.IP)
+			}
+		}
+	}
+
+	// label_selector targets carry their own health on expanded member
+	// servers, not on the selector entry itself.
+	for _, nested := range target.Targets {
+		addTargetHealth(sm, nested, selector, ts)
+	}
+}
+
 // lastTimeSeriesValue extracts the last numeric value from a Hetzner TimeSeries.
 // Returns 0, false if the series is empty or the value cannot be parsed.
 func lastTimeSeriesValue(values []hcloud.ServerMetricsValue) (float64, bool) {

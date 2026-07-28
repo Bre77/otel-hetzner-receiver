@@ -230,6 +230,9 @@ func (s *hetznerScraper) scrapeLoadBalancers(ctx context.Context, md pmetric.Met
 		addGauge(sm, "hetzner.load_balancer.targets.healthy", "{targets}", float64(healthy), ts)
 		addGauge(sm, "hetzner.load_balancer.targets.unhealthy", "{targets}", float64(unhealthy), ts)
 
+		// Per-target, per-service health so alerting can name which target is unhealthy.
+		addLBTargetHealthGauges(sm, lb.Targets, ts)
+
 		// API metrics
 		metrics, _, err := s.api.GetLBMetrics(ctx, lb, hcloud.LoadBalancerGetMetricsOpts{
 			Types: []hcloud.LoadBalancerMetricType{
