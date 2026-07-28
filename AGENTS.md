@@ -102,6 +102,20 @@ processor) was rejected - it mislabeled every series with one machine's
 identity. Any resource-identity fix belongs here, at the receiver, where
 per-resource data from the API is still available.
 
+## Per-Target Metric Identity (Load Balancer Targets)
+
+`hetzner.load_balancer.target.healthy` (`addLBTargetHealthGauges` in
+`metrics.go`) carries target identity as *data point* attributes, not
+resource attributes, because one LB resource has many targets: `host.id`/
+`host.name` for server targets, `hetzner.load_balancer.target.ip` for IP
+targets, `hetzner.load_balancer.target.label_selector` plus the expanded
+member server's own `host.id`/`host.name` for label_selector targets (health
+lives on the expanded members, never on the label_selector entry itself -
+`hcloud.LoadBalancerTarget.Targets`). A target with no `HealthStatus` entries
+emits nothing (absent), distinct from a target with a
+`LoadBalancerTargetHealthStatusStatusUnknown` entry (emitted, `status`
+attribute set to `unknown`).
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

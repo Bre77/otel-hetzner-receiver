@@ -272,16 +272,23 @@ func TestScrapeLoadBalancers(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "prod", v.Str())
 
-	// Check metrics: 3 traffic + 2 health + 3 API = 8
+	// Check metrics: 3 traffic + 2 aggregate health + 3 API + 6 per-target health
+	// (3 targets x 2 listen ports each) = 14
 	sm := rm.ScopeMetrics().At(0)
-	assert.Equal(t, 8, sm.Metrics().Len())
+	assert.Equal(t, 14, sm.Metrics().Len())
 
 	metricValues := make(map[string]float64)
+	var targetHealthPoints []pmetric.NumberDataPoint
 	for i := 0; i < sm.Metrics().Len(); i++ {
 		m := sm.Metrics().At(i)
+		if m.Name() == "hetzner.load_balancer.target.healthy" {
+			targetHealthPoints = append(targetHealthPoints, m.Gauge().DataPoints().At(0))
+			continue
+		}
 		dp := m.Gauge().DataPoints().At(0)
 		metricValues[m.Name()] = dp.DoubleValue()
 	}
+	require.Len(t, targetHealthPoints, 6)
 
 	// Traffic counters
 	assert.Equal(t, 500000000000.0, metricValues["hetzner.load_balancer.traffic.included"])
@@ -296,6 +303,188 @@ func TestScrapeLoadBalancers(t *testing.T) {
 	assert.Equal(t, 42.0, metricValues["hetzner.load_balancer.open_connections"])
 	assert.Equal(t, 15.5, metricValues["hetzner.load_balancer.connections_per_second"])
 	assert.Equal(t, 10000.0, metricValues["hetzner.load_balancer.bandwidth.in"])
+}
+
+func TestScrapeLoadBalancerTargetHealth(t *testing.T) {
+	lb := &hcloud.LoadBalancer{
+		ID:               20,
+		Name:             "lb-targets",
+		LoadBalancerType: &hcloud.LoadBalancerType{Name: "lb11"},
+		Location:         &hcloud.Location{Name: "fsn1"},
+		Targets: []hcloud.LoadBalancerTarget{
+			{ // healthy server target, single service
+				Type:   hcloud.LoadBalancerTargetTypeServer,
+				Server: &hcloud.LoadBalancerTargetServer{Server: &hcloud.Server{ID: 1, Name: "web-1"}},
+				HealthStatus: []hcloud.LoadBalancerTargetHealthStatus{
+					{ListenPort: 80, Status: hcloud.LoadBalancerTargetHealthStatusStatusHealthy},
+				},
+			},
+			{ // unhealthy server target, single service
+				Type:   hcloud.LoadBalancerTargetTypeServer,
+				Server: &hcloud.LoadBalancerTargetServer{Server: &hcloud.Server{ID: 2, Name: "web-2"}},
+				HealthStatus: []hcloud.LoadBalancerTargetHealthStatus{
+					{ListenPort: 80, Status: hcloud.LoadBalancerTargetHealthStatusStatusUnhealthy},
+				},
+			},
+			{ // multi-service target with mixed health across two listen ports
+				Type:   hcloud.LoadBalancerTargetTypeServer,
+				Server: &hcloud.LoadBalancerTargetServer{Server: &hcloud.Server{ID: 3, Name: "web-3"}},
+				HealthStatus: []hcloud.LoadBalancerTargetHealthStatus{
+					{ListenPort: 80, Status: hcloud.LoadBalancerTargetHealthStatusStatusHealthy},
+					{ListenPort: 443, Status: hcloud.LoadBalancerTargetHealthStatusStatusUnhealthy},
+				},
+			},
+			{ // IP target
+				Type: hcloud.LoadBalancerTargetTypeIP,
+				IP:   &hcloud.LoadBalancerTargetIP{IP: "203.0.113.5"},
+				HealthStatus: []hcloud.LoadBalancerTargetHealthStatus{
+					{ListenPort: 80, Status: hcloud.LoadBalancerTargetHealthStatusStatusHealthy},
+				},
+			},
+			{ // label_selector target expanding to two member servers
+				Type:          hcloud.LoadBalancerTargetTypeLabelSelector,
+				LabelSelector: &hcloud.LoadBalancerTargetLabelSelector{Selector: "role=web"},
+				Targets: []hcloud.LoadBalancerTarget{
+					{
+						Type:   hcloud.LoadBalancerTargetTypeServer,
+						Server: &hcloud.LoadBalancerTargetServer{Server: &hcloud.Server{ID: 4}},
+						HealthStatus: []hcloud.LoadBalancerTargetHealthStatus{
+							{ListenPort: 80, Status: hcloud.LoadBalancerTargetHealthStatusStatusHealthy},
+						},
+					},
+					{
+						Type:   hcloud.LoadBalancerTargetTypeServer,
+						Server: &hcloud.LoadBalancerTargetServer{Server: &hcloud.Server{ID: 5}},
+						HealthStatus: []hcloud.LoadBalancerTargetHealthStatus{
+							{ListenPort: 80, Status: hcloud.LoadBalancerTargetHealthStatusStatusUnknown},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	mock := &mockAPI{
+		loadBalancers: []*hcloud.LoadBalancer{lb},
+		lbMetrics: map[int64]*hcloud.LoadBalancerMetrics{
+			20: {TimeSeries: map[string][]hcloud.LoadBalancerMetricsValue{}},
+		},
+	}
+
+	s := &hetznerScraper{
+		cfg:    &Config{Servers: false, LoadBalancers: true, MetricsStep: 60},
+		logger: zap.NewNop(),
+		api:    mock,
+	}
+
+	md, err := s.Scrape(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, md.ResourceMetrics().Len())
+
+	sm := md.ResourceMetrics().At(0).ScopeMetrics().At(0)
+
+	type point struct {
+		value float64
+		attrs pcommon.Map
+	}
+	var points []point
+	for i := 0; i < sm.Metrics().Len(); i++ {
+		m := sm.Metrics().At(i)
+		if m.Name() != "hetzner.load_balancer.target.healthy" {
+			continue
+		}
+		dp := m.Gauge().DataPoints().At(0)
+		points = append(points, point{value: dp.DoubleValue(), attrs: dp.Attributes()})
+	}
+	// 1 (healthy) + 1 (unhealthy) + 2 (multi-service) + 1 (IP) + 2 (label_selector members) = 7
+	require.Len(t, points, 7)
+
+	findByHostID := func(id string) *point {
+		for i := range points {
+			if v, ok := points[i].attrs.Get("host.id"); ok && v.Str() == id {
+				return &points[i]
+			}
+		}
+		return nil
+	}
+
+	healthy := findByHostID("1")
+	require.NotNil(t, healthy)
+	assert.Equal(t, 1.0, healthy.value)
+	nameAttr, ok := healthy.attrs.Get("host.name")
+	require.True(t, ok)
+	assert.Equal(t, "web-1", nameAttr.Str())
+	typeAttr, ok := healthy.attrs.Get("hetzner.load_balancer.target.type")
+	require.True(t, ok)
+	assert.Equal(t, "server", typeAttr.Str())
+
+	unhealthy := findByHostID("2")
+	require.NotNil(t, unhealthy)
+	assert.Equal(t, 0.0, unhealthy.value)
+	statusAttr, ok := unhealthy.attrs.Get("hetzner.load_balancer.target.status")
+	require.True(t, ok)
+	assert.Equal(t, "unhealthy", statusAttr.Str())
+
+	// Multi-service target: one point per listen port, mixed health.
+	var multiServicePoints []point
+	for i := range points {
+		if v, ok := points[i].attrs.Get("host.id"); ok && v.Str() == "3" {
+			multiServicePoints = append(multiServicePoints, points[i])
+		}
+	}
+	require.Len(t, multiServicePoints, 2)
+	byPort := map[int64]float64{}
+	for _, p := range multiServicePoints {
+		portAttr, ok := p.attrs.Get("hetzner.load_balancer.target.listen_port")
+		require.True(t, ok)
+		byPort[portAttr.Int()] = p.value
+	}
+	assert.Equal(t, 1.0, byPort[80])
+	assert.Equal(t, 0.0, byPort[443])
+
+	// IP target.
+	var ipPoint *point
+	for i := range points {
+		if _, ok := points[i].attrs.Get("host.id"); ok {
+			continue
+		}
+		if _, ok := points[i].attrs.Get("hetzner.load_balancer.target.ip"); ok {
+			p := points[i]
+			ipPoint = &p
+		}
+	}
+	require.NotNil(t, ipPoint)
+	assert.Equal(t, 1.0, ipPoint.value)
+	ipAttr, ok := ipPoint.attrs.Get("hetzner.load_balancer.target.ip")
+	require.True(t, ok)
+	assert.Equal(t, "203.0.113.5", ipAttr.Str())
+
+	// label_selector expansion: both members carry the selector attribute
+	// and their own per-server health, including "unknown" status.
+	member4 := findByHostID("4")
+	require.NotNil(t, member4)
+	assert.Equal(t, 1.0, member4.value)
+	selAttr, ok := member4.attrs.Get("hetzner.load_balancer.target.label_selector")
+	require.True(t, ok)
+	assert.Equal(t, "role=web", selAttr.Str())
+
+	member5 := findByHostID("5")
+	require.NotNil(t, member5)
+	assert.Equal(t, 0.0, member5.value) // unknown status maps to gauge 0, distinguished by the status attribute
+	statusAttr5, ok := member5.attrs.Get("hetzner.load_balancer.target.status")
+	require.True(t, ok)
+	assert.Equal(t, "unknown", statusAttr5.Str())
+	selAttr5, ok := member5.attrs.Get("hetzner.load_balancer.target.label_selector")
+	require.True(t, ok)
+	assert.Equal(t, "role=web", selAttr5.Str())
+
+	// The label_selector target itself (no HealthStatus of its own) must not
+	// emit a point - only its expanded members do.
+	for _, p := range points {
+		if typeAttr, ok := p.attrs.Get("hetzner.load_balancer.target.type"); ok && typeAttr.Str() == "label_selector" {
+			t.Fatalf("label_selector target must not emit its own health point")
+		}
+	}
 }
 
 func TestScrapeServerListError(t *testing.T) {
