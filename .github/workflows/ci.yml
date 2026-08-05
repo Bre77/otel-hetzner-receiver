@@ -21,6 +21,10 @@ jobs:
         working-directory: hetznerreceiver
         run: go vet ./...
 
+      - name: Build
+        working-directory: hetznerreceiver
+        run: go build ./...
+
       - name: Run tests
         working-directory: hetznerreceiver
         run: go test -v ./...
