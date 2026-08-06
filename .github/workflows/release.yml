@@ -1,17 +1,26 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag to cut (e.g. v0.2.0)'
+        required: true
 
 permissions:
   contents: write
 
 jobs:
-  release:
+  validate:
     runs-on: ubuntu-latest
     steps:
+      - name: Check version format
+        run: |
+          [[ "${{ inputs.version }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "version must match v<major>.<minor>.<patch>, got '${{ inputs.version }}'" >&2
+            exit 1
+          }
+
       - uses: actions/checkout@v4
 
       - name: Setup Go
@@ -19,11 +28,32 @@ jobs:
         with:
           go-version-file: hetznerreceiver/go.mod
 
+      - name: Vet
+        working-directory: hetznerreceiver
+        run: go vet ./...
+
+      - name: Build
+        working-directory: hetznerreceiver
+        run: go build ./...
+
       - name: Run tests
         working-directory: hetznerreceiver
         run: go test -v ./...
 
+  release:
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag release candidate SHA
+        run: |
+          git tag "${{ inputs.version }}" "${{ github.sha }}"
+          git push origin "${{ inputs.version }}"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.version }}
           generate_release_notes: true

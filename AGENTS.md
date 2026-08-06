@@ -67,10 +67,15 @@ Hetzner Cloud API → hcloud-go SDK → Scrape() → OTel metrics → Exporter p
 
 ## CI
 
-`.github/workflows/ci.yml` runs `go vet` and `go test -v ./...` in `hetznerreceiver/`
-on push/PR to `main`. `.github/workflows/release.yml` runs the same tests then
-cuts a GitHub Release (via `softprops/action-gh-release`) on `v*.*.*` tags. Both
-pin the Go toolchain to `hetznerreceiver/go.mod`.
+`.github/workflows/ci.yml` runs `go vet`, `go build`, and `go test -v ./...` in
+`hetznerreceiver/` on push/PR to `main`. `.github/workflows/release.yml` is
+manually dispatched with a `version` input (e.g. `v0.2.0`): it re-runs the same
+vet/build/test gate, then a second job gated on the `production` GitHub
+Environment (required reviewer approval) tags the validated commit and cuts a
+GitHub Release (via `softprops/action-gh-release`) from it. Both workflows pin
+the Go toolchain to `hetznerreceiver/go.mod`. Tagging only ever happens inside
+this gated job - no push-to-tag trigger exists, so a release can't be cut
+without passing CI on the exact commit and getting approval.
 
 ## Key Dependencies
 
