@@ -101,11 +101,11 @@ for *that* resource, never from the collector's own environment:
   config field (`Config.Environment`) that a deployment sets explicitly;
   when empty, the attribute is omitted entirely rather than emitted blank.
 
-A prior attempt to fix missing `deployment.environment`/`host.name` at the
-collector-config level (inserting the collector host's own `host.name` via a
-processor) was rejected - it mislabeled every series with one machine's
-identity. Any resource-identity fix belongs here, at the receiver, where
-per-resource data from the API is still available.
+Do not fix missing `deployment.environment`/`host.name` at the collector-config
+level (e.g. via a processor inserting the collector host's own `host.name`) -
+that mislabels every series with one machine's identity. Resource-identity
+fixes belong here, at the receiver, where per-resource data from the API is
+still available.
 
 ## Per-Target Metric Identity (Load Balancer Targets)
 
