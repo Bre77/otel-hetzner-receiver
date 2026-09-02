@@ -1,125 +1,89 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for agents working in this repository. (`CLAUDE.md` is a symlink to this file.)
 
 ## Project Overview
 
-This is a custom OpenTelemetry Collector receiver for Hetzner Cloud. It polls metrics from the Hetzner Cloud API using the hcloud-go v2 SDK for servers and load balancers, and converts them to OpenTelemetry metrics format.
+A custom OpenTelemetry Collector receiver for Hetzner Cloud: it polls the
+Hetzner Cloud API via the hcloud-go v2 SDK for servers and load balancers and
+converts the results to OTel metrics.
 
-## Build Commands
+## Build, Test, Run
 
 ```bash
-# Build the collector (generates code in build/ and compiles binary)
+# Build the collector binary into ./build (ocb is gitignored - download the
+# OpenTelemetry Collector Builder matching otelcol_version in builder-config.yaml)
 ./ocb --config builder-config.yaml
 
-# Build with verbose output
-./ocb --config builder-config.yaml --verbose
+cd hetznerreceiver && go test ./...        # tests live only in this module
 
-# Generate code only, skip compilation
-./ocb --config builder-config.yaml --skip-compilation
-```
-
-## Test Commands
-
-```bash
-# Run all tests
-cd hetznerreceiver && go test ./...
-
-# Run specific test
-cd hetznerreceiver && go test -run TestScrapeServers
-
-# Run with verbose output
-cd hetznerreceiver && go test -v ./...
-
-# Run with coverage
-cd hetznerreceiver && go test -cover ./...
-```
-
-## Running the Collector
-
-```bash
-# Set API token
 export HETZNER_API_TOKEN="your-token-here"
-
-# Run with example config
 ./build/otelcol-hetzner --config example/config.yaml
 ```
 
+Config options are documented once, in `hetznerreceiver/doc.go` and
+`example/config.yaml`; dependency versions in `hetznerreceiver/go.mod` and
+`builder-config.yaml`. Do not restate either here.
+
 ## Architecture
 
-**Core package: `hetznerreceiver/`**
+Package `hetznerreceiver/`: `factory.go` (registers component type `hetzner`),
+`config.go`, `receiver.go` (hcloud client + scraperhelper controller),
+`scraper.go` (`Scrape()`), `metrics.go` (metric name/unit maps, gauge helper,
+attribute setters).
 
-- `factory.go` - Creates the OTel receiver factory, registers component type `hetzner`
-- `config.go` - Configuration struct with validation (api_token, intervals, resource toggles)
-- `receiver.go` - Main implementation: creates hcloud client, wires scraper to scraperhelper controller
-- `scraper.go` - `hetznerScraper.Scrape()` lists resources, fetches metrics, converts to OTel pmetric
-- `metrics.go` - Metric name/unit maps, gauge helper, resource attribute setters
-
-**Data flow:**
 ```
 Hetzner Cloud API → hcloud-go SDK → Scrape() → OTel metrics → Exporter pipeline
 ```
 
-**Interface-based testing:**
-- `hcloudAPI` interface abstracts 4 SDK methods (AllServers, GetServerMetrics, AllLoadBalancers, GetLBMetrics)
-- `mockAPI` in tests provides deterministic responses
-- No HTTP mocking needed - tests operate at the SDK interface level
+Tests operate at the SDK interface level, not over HTTP: the `hcloudAPI`
+interface in `scraper.go` abstracts the four SDK calls used, and `mockAPI` in
+the tests implements it. Keep new SDK usage behind that interface so it stays
+mockable.
 
 ## CI
 
-`.github/workflows/ci.yml` runs `go vet`, `go build`, and `go test -v ./...` in
-`hetznerreceiver/` on push/PR to `main`. `.github/workflows/release.yml` is
-manually dispatched with a `version` input (e.g. `v0.2.0`): it re-runs the same
-vet/build/test gate, then a second job gated on the `production` GitHub
-Environment (required reviewer approval) tags the validated commit and cuts a
-GitHub Release (via `softprops/action-gh-release`) from it. Both workflows pin
-the Go toolchain to `hetznerreceiver/go.mod`. Tagging only ever happens inside
-this gated job - no push-to-tag trigger exists, so a release can't be cut
-without passing CI on the exact commit and getting approval.
-
-## Key Dependencies
-
-- OpenTelemetry Collector SDK v0.143.0
-- `github.com/hetznercloud/hcloud-go/v2` - Hetzner Cloud Go SDK
+`.github/workflows/ci.yml` runs vet/build/test in `hetznerreceiver/` on
+push/PR to `main`. `.github/workflows/release.yml` is manually dispatched with
+a `version` input: it re-runs the same gate, then a job gated on the
+`production` GitHub Environment (required reviewer approval) tags that exact
+SHA and cuts the Release. **There must be no push-to-tag trigger** - tagging
+happens only inside the approved job, so a release cannot be cut without CI
+passing on the exact commit plus approval.
 
 ## Resource Attribute Conventions
 
-One receiver instance emits metrics for many Hetzner resources - never assume
-a single "collector host" identity applies to the data. Each resource gets
-its own `ResourceMetrics` with identity pulled from the Hetzner API response
-for *that* resource, never from the collector's own environment:
+One receiver instance emits metrics for many Hetzner resources, so never
+assume a single "collector host" identity applies to the data. Each resource
+gets its own `ResourceMetrics` with identity taken from the Hetzner API
+response for *that* resource, never from the collector's own environment:
 
 - **Servers** are real hosts: `host.id` / `host.name` / `host.type` /
-  `host.ip` are set from the server's own API fields (`setServerResourceAttributes`
-  in `metrics.go`).
-- **Load balancers are not hosts** - they're a managed PaaS product with no
-  underlying machine to name. Do not invent a `host.name` for them. Their
-  identity is `hetzner.load_balancer.id` / `hetzner.load_balancer.name`
-  (`setLBResourceAttributes` in `metrics.go`).
-- `deployment.environment.name` is never hardcoded in the receiver - the
-  Hetzner API has no concept of environment. It's an optional `environment`
-  config field (`Config.Environment`) that a deployment sets explicitly;
-  when empty, the attribute is omitted entirely rather than emitted blank.
+  `host.ip` come from the server's own API fields
+  (`setServerResourceAttributes`).
+- **Load balancers are not hosts** - a managed PaaS product with no underlying
+  machine to name. Never invent a `host.name` for them; their identity is
+  `hetzner.load_balancer.id` / `.name` (`setLBResourceAttributes`).
+- `deployment.environment.name` is never hardcoded here - the Hetzner API has
+  no concept of environment. It comes from the optional `environment` config
+  field, and is omitted entirely when empty rather than emitted blank.
 
-Do not fix missing `deployment.environment`/`host.name` at the collector-config
-level (e.g. via a processor inserting the collector host's own `host.name`) -
-that mislabels every series with one machine's identity. Resource-identity
-fixes belong here, at the receiver, where per-resource data from the API is
+Do not paper over a missing `deployment.environment` / `host.name` at the
+collector-config level (e.g. a processor inserting the collector host's own
+`host.name`) - that mislabels every series with one machine's identity.
+Resource-identity fixes belong at the receiver, where per-resource API data is
 still available.
 
 ## Per-Target Metric Identity (Load Balancer Targets)
 
-`hetzner.load_balancer.target.healthy` (`addLBTargetHealthGauges` in
-`metrics.go`) carries target identity as *data point* attributes, not
-resource attributes, because one LB resource has many targets: `host.id`/
-`host.name` for server targets, `hetzner.load_balancer.target.ip` for IP
-targets, `hetzner.load_balancer.target.label_selector` plus the expanded
-member server's own `host.id`/`host.name` for label_selector targets (health
-lives on the expanded members, never on the label_selector entry itself -
-`hcloud.LoadBalancerTarget.Targets`). A target with no `HealthStatus` entries
-emits nothing (absent), distinct from a target with a
-`LoadBalancerTargetHealthStatusStatusUnknown` entry (emitted, `status`
-attribute set to `unknown`).
+`hetzner.load_balancer.target.healthy` carries target identity as *data point*
+attributes, not resource attributes, because one LB resource has many targets.
+Health lives on a label_selector target's expanded member servers
+(`hcloud.LoadBalancerTarget.Targets`), never on the selector entry itself, so
+emission recurses into them. A target with no `HealthStatus` entries emits
+nothing, keeping "no target" distinguishable from a target reporting
+`...StatusUnknown` (emitted with `status` = `unknown`). See
+`addLBTargetHealthGauges` in `metrics.go` for the exact attribute set.
 
 ## Maintaining this file
 
